@@ -1,4 +1,4 @@
-import upload from "./upload";
+import upload from "./upload-polkadot";
 
 async function main() {
   await upload();
