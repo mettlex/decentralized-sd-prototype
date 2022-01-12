@@ -1,10 +1,5 @@
-import readline from "readline";
 import { Web3Storage, File } from "web3.storage";
 import {
-  mnemonicGenerate,
-  mnemonicToMiniSecret,
-  mnemonicValidate,
-  naclBoxPairFromSecret,
   naclEncrypt,
   secp256k1Sign,
   secp256k1Verify,
@@ -12,19 +7,11 @@ import {
   blake2AsU8a,
   base64Encode,
 } from "@polkadot/util-crypto";
-import { stringToU8a, u8aToHex } from "@polkadot/util";
+import { hexToU8a, stringToU8a, u8aToHex } from "@polkadot/util";
 
-const rl = readline.createInterface({
-  input: process.stdin,
-  output: process.stdout,
-  terminal: true,
-});
-
-const question = (query = ""): Promise<string> => {
-  return new Promise((resolve) => {
-    rl.question(query, resolve);
-  });
-};
+import { question } from "./utils";
+import { generateKeyPair } from "./crypt";
+import sss from "../../sss-wasm/lib";
 
 export const upload = async () => {
   let token = process.env.TOKEN;
@@ -41,7 +28,7 @@ export const upload = async () => {
 
   const storage = new Web3Storage({ token });
 
-  const { publicKey, secretKey } = await generateKeyPair();
+  const { publicKey, secretKey, seed } = await generateKeyPair();
 
   if (!secretKey) {
     return;
@@ -96,6 +83,47 @@ export const upload = async () => {
     files.push(new File([content], name, { type: "text/plain" }));
   }
 
+  console.log("=== Shamir's Secret Sharing Scheme (SSS) ===");
+
+  if (seed.length > 63) {
+    console.error("Seed size more than 63 bytes is unsupported. Exiting...");
+    return;
+  }
+
+  const sssTotalShares = parseInt(await question("Total Number of Shares: "));
+  const sssMinShares = parseInt(await question("Minimum Number of Shares: "));
+
+  const extData = new Uint8Array(64);
+  extData.set(seed, 0);
+  extData[seed.length] = 0x80; // int (end of data)
+
+  const shares = (
+    await sss.createShares(extData, sssTotalShares, sssMinShares)
+  ).map((x) => u8aToHex(x));
+
+  console.log("SSS Secret Shares:\n");
+
+  let shareNo = 1;
+
+  for (const share of shares) {
+    console.log(`${shareNo}.  ${share}\n`);
+    shareNo++;
+  }
+
+  const minSharesHex = shares.slice(0, sssMinShares);
+
+  const seedFromSSSWithPadding = await sss.combineShares(
+    minSharesHex.map((x) => hexToU8a(x)),
+  );
+
+  const indexOf0x80 = seedFromSSSWithPadding.lastIndexOf(0x80);
+
+  const seedFromSSS = seedFromSSSWithPadding.subarray(0, indexOf0x80);
+
+  if (u8aToHex(seedFromSSS) !== u8aToHex(seed)) {
+    console.error("Seed recovery check failed.");
+  }
+
   const metadata = JSON.stringify({
     version: "1.0",
     nacl_public_key: u8aToHex(publicKey),
@@ -104,6 +132,8 @@ export const upload = async () => {
     sign_algo: "secp256k1",
     content_encoding: "base64",
     encryption: "xsalsa20-poly1305, tweetnacl.js",
+    sss_total_shares: sssTotalShares,
+    sss_minimum_shares: sssMinShares,
   });
 
   console.log(`\nMetadata:\n\n${metadata}\n`);
@@ -114,59 +144,11 @@ export const upload = async () => {
     name: await question("Folder/Directory Name: "),
   });
 
-  console.log(`Content added with CID: ${cid}`);
-  console.log(`Link: https://cloudflare-ipfs.com/ipfs/${cid}`);
-};
+  console.log(`\nContent added with IPFS CID: ${cid}\n`);
 
-export const generateKeyPair = async (): Promise<{
-  publicKey: Uint8Array;
-  secretKey: Uint8Array;
-}> => {
-  let seedAlice: Uint8Array;
-
-  if (
-    (await question("Auto-generate Mnemonic Password? Y or N: "))
-      .toLowerCase()
-      .startsWith("y")
-  ) {
-    // Create mnemonic string for Alice using BIP39
-    const mnemonicAlice = mnemonicGenerate(24);
-
-    if (
-      (await question("Show mnemonic words? Y or N: "))
-        .toLowerCase()
-        .startsWith("y")
-    ) {
-      console.log(`Generated mnemonic: ${mnemonicAlice}`);
-    }
-
-    // Validate the mnemic string that was generated
-    const isValidMnemonic = mnemonicValidate(mnemonicAlice);
-
-    if (!isValidMnemonic) {
-      console.error("Invaild mnemonic");
-    }
-
-    // Create valid Substrate-compatible seed from mnemonic
-    seedAlice = mnemonicToMiniSecret(mnemonicAlice);
-  } else {
-    seedAlice = new Uint8Array(
-      Buffer.from((await question("Type Mnemonic/Password: ")).trim()),
-    );
-  }
-
-  // Generate new public/secret keypair for Alice from the supplied seed
-  const { publicKey, secretKey } = naclBoxPairFromSecret(seedAlice);
-
-  console.log("Public Key:", u8aToHex(publicKey));
-
-  if (
-    (await question("Show Secret Key? Y or N: ")).toLowerCase().startsWith("y")
-  ) {
-    console.log("Secret Key:", u8aToHex(secretKey));
-  }
-
-  return { publicKey, secretKey };
+  console.log(
+    `Links:\n\nhttps://cloudflare-ipfs.com/ipfs/${cid}\n\nhttps://${cid}.cf-ipfs.com\n\nhttps://${cid}.ipfs.dweb.link\n`,
+  );
 };
 
 export default upload;
