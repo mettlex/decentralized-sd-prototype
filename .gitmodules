@@ -1,0 +1,3 @@
+[submodule "src/sss-wasm"]
+	path = src/sss-wasm
+	url = git@github.com:mettlex/sss-wasm.git
